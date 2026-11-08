@@ -60,4 +60,31 @@ print("%-14s %6s %6s %6s  %s" % ("file", "lines", "hit", "%", "missed"))
 for name, a, b, miss in rows:
     print("%-14s %6d %6d %5.0f%%  %s" % (name, a, b, 100.0 * b / max(a, 1), miss))
 print("%-14s %6d %6d %5.1f%%" % ("TOTAL", total, done, 100.0 * done / total))
+
+
+# HTML-отчёт: docs/coverage_report.html
+import html
+
+parts = ["<!doctype html><meta charset='utf-8'><title>Покрытие сервисного слоя</title>",
+         "<style>body{font-family:sans-serif;margin:24px}table{border-collapse:collapse}"
+         "td,th{border:1px solid #bbb;padding:4px 10px}pre{margin:0}"
+         ".ok{background:#e3f6e3}.no{background:#fbd5d5}.sk{color:#888}</style>",
+         "<h1>Покрытие сервисного слоя (app/services)</h1>",
+         "<p>Тестов: %d. Покрыто строк: %d из %d (%.1f%%)</p>" % (out.testsRun, done, total, 100.0 * done / total),
+         "<table><tr><th>Файл</th><th>Строк</th><th>Покрыто</th><th>%</th></tr>"]
+for name, a, b, miss in rows:
+    parts.append("<tr><td>%s</td><td>%d</td><td>%d</td><td>%.0f%%</td></tr>" % (name, a, b, 100.0 * b / max(a, 1)))
+parts.append("</table>")
+for name, a, b, miss in rows:
+    p = os.path.join(svc, name)
+    lines = code_lines(p)
+    parts.append("<h2>%s</h2>" % name)
+    for i, line in enumerate(open(p, encoding="utf-8").read().split("\n"), 1):
+        cls = "sk"
+        if i in lines:
+            cls = "ok" if i not in miss else "no"
+        parts.append("<pre class='%s'>%4d  %s</pre>" % (cls, i, html.escape(line)))
+with open(os.path.join(root, "docs", "coverage_report.html"), "w", encoding="utf-8") as f:
+    f.write("\n".join(parts))
+print("report: docs/coverage_report.html")
 sys.exit(0 if out.wasSuccessful() else 1)

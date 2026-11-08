@@ -1,0 +1,376 @@
+<!doctype html><meta charset='utf-8'><title>Покрытие сервисного слоя</title>
+<style>body{font-family:sans-serif;margin:24px}table{border-collapse:collapse}td,th{border:1px solid #bbb;padding:4px 10px}pre{margin:0}.ok{background:#e3f6e3}.no{background:#fbd5d5}.sk{color:#888}</style>
+<h1>Покрытие сервисного слоя (app/services)</h1>
+<p>Тестов: 211. Покрыто строк: 276 из 276 (100.0%)</p>
+<table><tr><th>Файл</th><th>Строк</th><th>Покрыто</th><th>%</th></tr>
+<tr><td>auth.py</td><td>39</td><td>39</td><td>100%</td></tr>
+<tr><td>bookings.py</td><td>100</td><td>100</td><td>100%</td></tr>
+<tr><td>rooms.py</td><td>82</td><td>82</td><td>100%</td></tr>
+<tr><td>rules.py</td><td>55</td><td>55</td><td>100%</td></tr>
+</table>
+<h2>auth.py</h2>
+<pre class='sk'>   1  # Регистрация, вход, смена ролей.</pre>
+<pre class='ok'>   2  from app import consts</pre>
+<pre class='ok'>   3  from app.errors import Conflict, Forbidden, Invalid, NotFound, Unauthorized</pre>
+<pre class='sk'>   4  </pre>
+<pre class='sk'>   5  </pre>
+<pre class='ok'>   6  class AuthService:</pre>
+<pre class='ok'>   7      def __init__(self, users, hasher, tokens):</pre>
+<pre class='sk'>   8          # users - репозиторий; hasher.make(p), hasher.check(p, h); tokens.make(user)</pre>
+<pre class='ok'>   9          self.users = users</pre>
+<pre class='ok'>  10          self.hasher = hasher</pre>
+<pre class='ok'>  11          self.tokens = tokens</pre>
+<pre class='sk'>  12  </pre>
+<pre class='ok'>  13      def register(self, email, name, password):</pre>
+<pre class='ok'>  14          email = email.strip()</pre>
+<pre class='ok'>  15          name = name.strip()</pre>
+<pre class='ok'>  16          if &quot;@&quot; not in email or email.startswith(&quot;@&quot;):</pre>
+<pre class='ok'>  17              raise Invalid(&quot;bad email&quot;)</pre>
+<pre class='ok'>  18          if not name:</pre>
+<pre class='ok'>  19              raise Invalid(&quot;name is empty&quot;)</pre>
+<pre class='ok'>  20          if len(password) &lt; 6:</pre>
+<pre class='ok'>  21              raise Invalid(&quot;password is too short&quot;)</pre>
+<pre class='ok'>  22          if len(password.encode(&quot;utf-8&quot;)) &gt; 72:</pre>
+<pre class='ok'>  23              raise Invalid(&quot;password is too long&quot;)</pre>
+<pre class='ok'>  24          if self.users.by_email(email):</pre>
+<pre class='ok'>  25              raise Conflict(&quot;email already used&quot;)</pre>
+<pre class='sk'>  26          # регистрация всегда создаёт EMPLOYEE</pre>
+<pre class='ok'>  27          u = self.users.add(email, name, self.hasher.make(password), consts.EMPLOYEE)</pre>
+<pre class='ok'>  28          self.users.commit()</pre>
+<pre class='ok'>  29          return u</pre>
+<pre class='sk'>  30  </pre>
+<pre class='ok'>  31      def login(self, email, password):</pre>
+<pre class='ok'>  32          u = self.users.by_email(email.strip())</pre>
+<pre class='ok'>  33          if u is None or not self.hasher.check(password, u.pass_hash):</pre>
+<pre class='ok'>  34              raise Unauthorized(&quot;wrong email or password&quot;)</pre>
+<pre class='ok'>  35          return self.tokens.make(u)</pre>
+<pre class='sk'>  36  </pre>
+<pre class='ok'>  37      def set_role(self, actor, user_id, role_id):</pre>
+<pre class='ok'>  38          if actor.role_id != consts.ADMIN:</pre>
+<pre class='ok'>  39              raise Forbidden(&quot;only admin can change roles&quot;)</pre>
+<pre class='ok'>  40          if role_id not in consts.ROLES:</pre>
+<pre class='ok'>  41              raise Invalid(&quot;unknown role&quot;)</pre>
+<pre class='ok'>  42          u = self.users.get(user_id)</pre>
+<pre class='ok'>  43          if u is None:</pre>
+<pre class='ok'>  44              raise NotFound(&quot;user not found&quot;)</pre>
+<pre class='ok'>  45          u.role_id = role_id</pre>
+<pre class='ok'>  46          self.users.commit()</pre>
+<pre class='ok'>  47          return u</pre>
+<pre class='sk'>  48  </pre>
+<h2>bookings.py</h2>
+<pre class='sk'>   1  # Бронирования: создание, перенос, смена статуса, права, журнал.</pre>
+<pre class='ok'>   2  from datetime import datetime, timezone</pre>
+<pre class='ok'>   3  from zoneinfo import ZoneInfo</pre>
+<pre class='sk'>   4  </pre>
+<pre class='ok'>   5  from app import consts</pre>
+<pre class='ok'>   6  from app.errors import Conflict, Forbidden, Invalid, NotFound</pre>
+<pre class='ok'>   7  from app.services import rules</pre>
+<pre class='ok'>   8  from app.services.rooms import Page, check_page</pre>
+<pre class='sk'>   9  </pre>
+<pre class='sk'>  10  </pre>
+<pre class='ok'>  11  def is_boss(u):</pre>
+<pre class='ok'>  12      return u.role_id in (consts.MANAGER, consts.ADMIN)</pre>
+<pre class='sk'>  13  </pre>
+<pre class='sk'>  14  </pre>
+<pre class='ok'>  15  class BookingService:</pre>
+<pre class='ok'>  16      def __init__(self, bookings, rooms, tz=&quot;Europe/Moscow&quot;, now=None):</pre>
+<pre class='ok'>  17          self.bookings = bookings</pre>
+<pre class='ok'>  18          self.rooms = rooms</pre>
+<pre class='ok'>  19          self.tz = ZoneInfo(tz) if isinstance(tz, str) else tz</pre>
+<pre class='sk'>  20          # now - функция без аргументов; в тестах подставляем своё время</pre>
+<pre class='ok'>  21          self.now = now or (lambda: datetime.now(timezone.utc))</pre>
+<pre class='sk'>  22  </pre>
+<pre class='sk'>  23      # --- служебное ---</pre>
+<pre class='sk'>  24  </pre>
+<pre class='ok'>  25      def _room(self, room_id):</pre>
+<pre class='ok'>  26          r = self.rooms.get(room_id)</pre>
+<pre class='ok'>  27          if r is None:</pre>
+<pre class='ok'>  28              raise NotFound(&quot;room not found&quot;)</pre>
+<pre class='ok'>  29          return r</pre>
+<pre class='sk'>  30  </pre>
+<pre class='ok'>  31      def _get(self, actor, bid):</pre>
+<pre class='ok'>  32          b = self.bookings.get(bid)</pre>
+<pre class='ok'>  33          if b is None:</pre>
+<pre class='ok'>  34              raise NotFound(&quot;booking not found&quot;)</pre>
+<pre class='ok'>  35          if b.user_id != actor.id and not is_boss(actor):</pre>
+<pre class='ok'>  36              raise Forbidden(&quot;not your booking&quot;)</pre>
+<pre class='ok'>  37          return b</pre>
+<pre class='sk'>  38  </pre>
+<pre class='ok'>  39      def _check_all(self, r, start, end, people, skip_id=None):</pre>
+<pre class='sk'>  40          # все правила для комнаты r и интервала; общий код для create и move</pre>
+<pre class='ok'>  41          if not r.is_active:</pre>
+<pre class='ok'>  42              raise Conflict(&quot;room is not active&quot;)</pre>
+<pre class='ok'>  43          rules.check_time(start, end, self.now(), self.tz)</pre>
+<pre class='ok'>  44          rules.check_people(people, r.capacity)</pre>
+<pre class='ok'>  45          if self.bookings.busy(r.id, start, end, skip_id):</pre>
+<pre class='ok'>  46              raise Conflict(&quot;room is busy at this time&quot;)</pre>
+<pre class='sk'>  47  </pre>
+<pre class='ok'>  48      def _log(self, b, actor, action):</pre>
+<pre class='sk'>  49          # запись журнала со снимком брони</pre>
+<pre class='ok'>  50          self.bookings.add_history(b.id, actor.id, action, b.status_id, b.start_at, b.end_at)</pre>
+<pre class='sk'>  51  </pre>
+<pre class='sk'>  52      # --- операции ---</pre>
+<pre class='sk'>  53  </pre>
+<pre class='ok'>  54      def create(self, actor, room_id, start, end, title, people):</pre>
+<pre class='ok'>  55          if not title or not title.strip():</pre>
+<pre class='ok'>  56              raise Invalid(&quot;title is empty&quot;)</pre>
+<pre class='ok'>  57          r = self._room(room_id)</pre>
+<pre class='ok'>  58          self._check_all(r, start, end, people)</pre>
+<pre class='ok'>  59          b = self.bookings.add(r.id, actor.id, title.strip(), people, start, end)</pre>
+<pre class='ok'>  60          self._log(b, actor, consts.A_CREATE)</pre>
+<pre class='ok'>  61          self.bookings.commit()</pre>
+<pre class='ok'>  62          return b</pre>
+<pre class='sk'>  63  </pre>
+<pre class='ok'>  64      def get(self, actor, bid):</pre>
+<pre class='ok'>  65          return self._get(actor, bid)</pre>
+<pre class='sk'>  66  </pre>
+<pre class='ok'>  67      def mine(self, actor, page=1, size=20):</pre>
+<pre class='ok'>  68          check_page(page, size)</pre>
+<pre class='ok'>  69          items, total = self.bookings.find(actor.id, None, (page - 1) * size, size)</pre>
+<pre class='ok'>  70          return Page(items, total, page, size)</pre>
+<pre class='sk'>  71  </pre>
+<pre class='ok'>  72      def all(self, actor, status_id=None, page=1, size=20):</pre>
+<pre class='ok'>  73          if not is_boss(actor):</pre>
+<pre class='ok'>  74              raise Forbidden(&quot;manager or admin only&quot;)</pre>
+<pre class='ok'>  75          check_page(page, size)</pre>
+<pre class='ok'>  76          if status_id is not None and status_id not in consts.STATUSES:</pre>
+<pre class='ok'>  77              raise Invalid(&quot;unknown status&quot;)</pre>
+<pre class='ok'>  78          items, total = self.bookings.find(None, status_id, (page - 1) * size, size)</pre>
+<pre class='ok'>  79          return Page(items, total, page, size)</pre>
+<pre class='sk'>  80  </pre>
+<pre class='ok'>  81      def move(self, actor, bid, start, end, room_id=None):</pre>
+<pre class='ok'>  82          b = self._get(actor, bid)</pre>
+<pre class='ok'>  83          if b.status_id not in consts.ACTIVE:</pre>
+<pre class='ok'>  84              raise Conflict(&quot;closed booking can not be moved&quot;)</pre>
+<pre class='ok'>  85          r = self._room(room_id if room_id is not None else b.room_id)</pre>
+<pre class='ok'>  86          self._check_all(r, start, end, b.people, skip_id=b.id)</pre>
+<pre class='ok'>  87          b.room_id = r.id</pre>
+<pre class='ok'>  88          b.start_at = start</pre>
+<pre class='ok'>  89          b.end_at = end</pre>
+<pre class='ok'>  90          self._log(b, actor, consts.A_MOVE)</pre>
+<pre class='ok'>  91          self.bookings.commit()</pre>
+<pre class='ok'>  92          return b</pre>
+<pre class='sk'>  93  </pre>
+<pre class='ok'>  94      def _change(self, actor, bid, to, action):</pre>
+<pre class='sk'>  95          # единственное место, где меняется статус</pre>
+<pre class='ok'>  96          b = self._get(actor, bid)</pre>
+<pre class='ok'>  97          if not rules.can_move(b.status_id, to):</pre>
+<pre class='ok'>  98              raise Conflict(&quot;can not move from %s to %s&quot; % (</pre>
+<pre class='sk'>  99                  consts.STATUSES[b.status_id], consts.STATUSES[to]))</pre>
+<pre class='ok'> 100          b.status_id = to</pre>
+<pre class='ok'> 101          self._log(b, actor, action)</pre>
+<pre class='ok'> 102          self.bookings.commit()</pre>
+<pre class='ok'> 103          return b</pre>
+<pre class='sk'> 104  </pre>
+<pre class='ok'> 105      def confirm(self, actor, bid):</pre>
+<pre class='ok'> 106          if not is_boss(actor):</pre>
+<pre class='ok'> 107              raise Forbidden(&quot;manager or admin only&quot;)</pre>
+<pre class='ok'> 108          return self._change(actor, bid, consts.CONFIRMED, consts.A_CONFIRM)</pre>
+<pre class='sk'> 109  </pre>
+<pre class='ok'> 110      def complete(self, actor, bid):</pre>
+<pre class='ok'> 111          if not is_boss(actor):</pre>
+<pre class='ok'> 112              raise Forbidden(&quot;manager or admin only&quot;)</pre>
+<pre class='ok'> 113          return self._change(actor, bid, consts.COMPLETED, consts.A_COMPLETE)</pre>
+<pre class='sk'> 114  </pre>
+<pre class='ok'> 115      def cancel(self, actor, bid):</pre>
+<pre class='ok'> 116          return self._change(actor, bid, consts.CANCELLED, consts.A_CANCEL)</pre>
+<pre class='sk'> 117  </pre>
+<pre class='ok'> 118      def history(self, actor, bid):</pre>
+<pre class='ok'> 119          self._get(actor, bid)</pre>
+<pre class='ok'> 120          return self.bookings.history(bid)</pre>
+<pre class='sk'> 121  </pre>
+<pre class='ok'> 122      def free(self, room_id, day, minutes=consts.MIN_MIN):</pre>
+<pre class='ok'> 123          r = self._room(room_id)</pre>
+<pre class='ok'> 124          if minutes &lt; 1:</pre>
+<pre class='ok'> 125              raise Invalid(&quot;minutes must be positive&quot;)</pre>
+<pre class='ok'> 126          if not r.is_active:</pre>
+<pre class='ok'> 127              return []</pre>
+<pre class='ok'> 128          x, y = rules.day_window(day, self.tz)</pre>
+<pre class='ok'> 129          busy = self.bookings.busy_list(r.id, x, y)</pre>
+<pre class='ok'> 130          return rules.free_slots(busy, day, self.tz, self.now(), minutes)</pre>
+<pre class='sk'> 131  </pre>
+<h2>rooms.py</h2>
+<pre class='sk'>   1  # Комнаты и оборудование.</pre>
+<pre class='ok'>   2  from app import consts</pre>
+<pre class='ok'>   3  from app.errors import Conflict, Forbidden, Invalid, NotFound</pre>
+<pre class='sk'>   4  </pre>
+<pre class='sk'>   5  </pre>
+<pre class='ok'>   6  def only_admin(u):</pre>
+<pre class='ok'>   7      if u.role_id != consts.ADMIN:</pre>
+<pre class='ok'>   8          raise Forbidden(&quot;admin only&quot;)</pre>
+<pre class='sk'>   9  </pre>
+<pre class='sk'>  10  </pre>
+<pre class='ok'>  11  def check_page(page, size):</pre>
+<pre class='ok'>  12      if page &lt; 1:</pre>
+<pre class='ok'>  13          raise Invalid(&quot;page must be &gt;= 1&quot;)</pre>
+<pre class='ok'>  14      if size &lt; 1 or size &gt; 100:</pre>
+<pre class='ok'>  15          raise Invalid(&quot;size must be 1..100&quot;)</pre>
+<pre class='sk'>  16  </pre>
+<pre class='sk'>  17  </pre>
+<pre class='ok'>  18  class Page:</pre>
+<pre class='ok'>  19      def __init__(self, items, total, page, size):</pre>
+<pre class='ok'>  20          self.items = items</pre>
+<pre class='ok'>  21          self.total = total</pre>
+<pre class='ok'>  22          self.page = page</pre>
+<pre class='ok'>  23          self.size = size</pre>
+<pre class='sk'>  24  </pre>
+<pre class='sk'>  25  </pre>
+<pre class='ok'>  26  class RoomService:</pre>
+<pre class='ok'>  27      def __init__(self, rooms, equip):</pre>
+<pre class='ok'>  28          self.rooms = rooms</pre>
+<pre class='ok'>  29          self.equip = equip</pre>
+<pre class='sk'>  30  </pre>
+<pre class='ok'>  31      def _check(self, name, floor, capacity):</pre>
+<pre class='ok'>  32          if not name or not name.strip():</pre>
+<pre class='ok'>  33              raise Invalid(&quot;name is empty&quot;)</pre>
+<pre class='ok'>  34          if capacity &lt; 1:</pre>
+<pre class='ok'>  35              raise Invalid(&quot;capacity must be positive&quot;)</pre>
+<pre class='ok'>  36          if floor &lt; -5 or floor &gt; 100:</pre>
+<pre class='ok'>  37              raise Invalid(&quot;bad floor&quot;)</pre>
+<pre class='sk'>  38  </pre>
+<pre class='ok'>  39      def _eq(self, ids):</pre>
+<pre class='ok'>  40          ids = sorted(set(ids or []))</pre>
+<pre class='ok'>  41          found = self.equip.many(ids)</pre>
+<pre class='ok'>  42          if len(found) != len(ids):</pre>
+<pre class='ok'>  43              raise Invalid(&quot;unknown equipment&quot;)</pre>
+<pre class='ok'>  44          return found</pre>
+<pre class='sk'>  45  </pre>
+<pre class='ok'>  46      def create(self, actor, name, floor, capacity, equipment_ids=None):</pre>
+<pre class='ok'>  47          only_admin(actor)</pre>
+<pre class='ok'>  48          self._check(name, floor, capacity)</pre>
+<pre class='ok'>  49          if self.rooms.by_name(name.strip()):</pre>
+<pre class='ok'>  50              raise Conflict(&quot;room name already used&quot;)</pre>
+<pre class='ok'>  51          eq = self._eq(equipment_ids)</pre>
+<pre class='ok'>  52          r = self.rooms.add(name.strip(), floor, capacity, eq)</pre>
+<pre class='ok'>  53          self.rooms.commit()</pre>
+<pre class='ok'>  54          return r</pre>
+<pre class='sk'>  55  </pre>
+<pre class='ok'>  56      def get(self, room_id):</pre>
+<pre class='ok'>  57          r = self.rooms.get(room_id)</pre>
+<pre class='ok'>  58          if r is None:</pre>
+<pre class='ok'>  59              raise NotFound(&quot;room not found&quot;)</pre>
+<pre class='ok'>  60          return r</pre>
+<pre class='sk'>  61  </pre>
+<pre class='ok'>  62      def list(self, min_capacity=None, floor=None, equipment_ids=None,</pre>
+<pre class='sk'>  63               only_active=True, page=1, size=20):</pre>
+<pre class='ok'>  64          check_page(page, size)</pre>
+<pre class='ok'>  65          items, total = self.rooms.find(</pre>
+<pre class='sk'>  66              min_capacity, floor, sorted(set(equipment_ids or [])),</pre>
+<pre class='sk'>  67              only_active, (page - 1) * size, size)</pre>
+<pre class='ok'>  68          return Page(items, total, page, size)</pre>
+<pre class='sk'>  69  </pre>
+<pre class='ok'>  70      def update(self, actor, room_id, name, floor, capacity, equipment_ids=None):</pre>
+<pre class='ok'>  71          only_admin(actor)</pre>
+<pre class='ok'>  72          r = self.get(room_id)</pre>
+<pre class='ok'>  73          self._check(name, floor, capacity)</pre>
+<pre class='ok'>  74          x = self.rooms.by_name(name.strip())</pre>
+<pre class='ok'>  75          if x is not None and x.id != r.id:</pre>
+<pre class='ok'>  76              raise Conflict(&quot;room name already used&quot;)</pre>
+<pre class='ok'>  77          eq = self._eq(equipment_ids)</pre>
+<pre class='ok'>  78          r.name = name.strip()</pre>
+<pre class='ok'>  79          r.floor = floor</pre>
+<pre class='ok'>  80          r.capacity = capacity</pre>
+<pre class='ok'>  81          r.equipment = eq</pre>
+<pre class='ok'>  82          self.rooms.commit()</pre>
+<pre class='ok'>  83          return r</pre>
+<pre class='sk'>  84  </pre>
+<pre class='ok'>  85      def deactivate(self, actor, room_id):</pre>
+<pre class='sk'>  86          # мягкое удаление; старые брони остаются, новые создать нельзя</pre>
+<pre class='ok'>  87          only_admin(actor)</pre>
+<pre class='ok'>  88          r = self.get(room_id)</pre>
+<pre class='ok'>  89          r.is_active = False</pre>
+<pre class='ok'>  90          self.rooms.commit()</pre>
+<pre class='ok'>  91          return r</pre>
+<pre class='sk'>  92  </pre>
+<pre class='ok'>  93      def equipment(self):</pre>
+<pre class='ok'>  94          return self.equip.all()</pre>
+<pre class='sk'>  95  </pre>
+<pre class='ok'>  96      def add_equipment(self, actor, name):</pre>
+<pre class='ok'>  97          only_admin(actor)</pre>
+<pre class='ok'>  98          if not name or not name.strip():</pre>
+<pre class='ok'>  99              raise Invalid(&quot;name is empty&quot;)</pre>
+<pre class='ok'> 100          if self.equip.by_name(name.strip()):</pre>
+<pre class='ok'> 101              raise Conflict(&quot;equipment already exists&quot;)</pre>
+<pre class='ok'> 102          e = self.equip.add(name.strip())</pre>
+<pre class='ok'> 103          self.equip.commit()</pre>
+<pre class='ok'> 104          return e</pre>
+<pre class='sk'> 105  </pre>
+<h2>rules.py</h2>
+<pre class='sk'>   1  # Чистые функции правил. Без БД и без FastAPI.</pre>
+<pre class='ok'>   2  from datetime import datetime, timedelta, time</pre>
+<pre class='sk'>   3  </pre>
+<pre class='ok'>   4  from app import consts</pre>
+<pre class='ok'>   5  from app.errors import Invalid</pre>
+<pre class='sk'>   6  </pre>
+<pre class='sk'>   7  </pre>
+<pre class='ok'>   8  def is_overlap(a1, a2, b1, b2):</pre>
+<pre class='sk'>   9      # интервалы [a1, a2) и [b1, b2) пересекаются, если a1 &lt; b2 и b1 &lt; a2.</pre>
+<pre class='sk'>  10      # &quot;встык&quot; (a2 == b1) пересечением не считается</pre>
+<pre class='ok'>  11      return a1 &lt; b2 and b1 &lt; a2</pre>
+<pre class='sk'>  12  </pre>
+<pre class='sk'>  13  </pre>
+<pre class='ok'>  14  def check_time(start, end, now, tz):</pre>
+<pre class='sk'>  15      # проверки по порядку; первая неудачная даёт Invalid</pre>
+<pre class='ok'>  16      if start.tzinfo is None or end.tzinfo is None:</pre>
+<pre class='ok'>  17          raise Invalid(&quot;time must have timezone&quot;)</pre>
+<pre class='ok'>  18      if end &lt;= start:</pre>
+<pre class='ok'>  19          raise Invalid(&quot;end must be after start&quot;)</pre>
+<pre class='ok'>  20      d = end - start</pre>
+<pre class='ok'>  21      if d &lt; timedelta(minutes=consts.MIN_MIN):</pre>
+<pre class='ok'>  22          raise Invalid(&quot;booking is shorter than 15 minutes&quot;)</pre>
+<pre class='ok'>  23      if d &gt; timedelta(minutes=consts.MAX_MIN):</pre>
+<pre class='ok'>  24          raise Invalid(&quot;booking is longer than 4 hours&quot;)</pre>
+<pre class='ok'>  25      if start &lt; now:</pre>
+<pre class='ok'>  26          raise Invalid(&quot;start is in the past&quot;)</pre>
+<pre class='ok'>  27      a = start.astimezone(tz)</pre>
+<pre class='ok'>  28      b = end.astimezone(tz)</pre>
+<pre class='ok'>  29      if a.date() != b.date():</pre>
+<pre class='sk'>  30          # бронь до ровно 21:00 заканчивается в тот же день, так что полночь сюда не попадает</pre>
+<pre class='ok'>  31          raise Invalid(&quot;booking must be inside one day&quot;)</pre>
+<pre class='ok'>  32      if a.time() &lt; time(consts.OPEN_H) or b.time() &gt; time(consts.CLOSE_H):</pre>
+<pre class='ok'>  33          raise Invalid(&quot;work time is 09:00-21:00&quot;)</pre>
+<pre class='sk'>  34  </pre>
+<pre class='sk'>  35  </pre>
+<pre class='ok'>  36  def check_people(people, capacity):</pre>
+<pre class='ok'>  37      if people &lt; 1:</pre>
+<pre class='ok'>  38          raise Invalid(&quot;people must be positive&quot;)</pre>
+<pre class='ok'>  39      if people &gt; capacity:</pre>
+<pre class='ok'>  40          raise Invalid(&quot;people more than room capacity&quot;)</pre>
+<pre class='sk'>  41  </pre>
+<pre class='sk'>  42  </pre>
+<pre class='ok'>  43  def can_move(a, b):</pre>
+<pre class='sk'>  44      # можно ли поменять статус a -&gt; b</pre>
+<pre class='ok'>  45      return b in consts.MOVES.get(a, ())</pre>
+<pre class='sk'>  46  </pre>
+<pre class='sk'>  47  </pre>
+<pre class='ok'>  48  def day_window(day, tz):</pre>
+<pre class='sk'>  49      # рабочее окно даты day (datetime.date) в часовом поясе tz</pre>
+<pre class='ok'>  50      x = datetime(day.year, day.month, day.day, consts.OPEN_H, tzinfo=tz)</pre>
+<pre class='ok'>  51      y = datetime(day.year, day.month, day.day, consts.CLOSE_H, tzinfo=tz)</pre>
+<pre class='ok'>  52      return x, y</pre>
+<pre class='sk'>  53  </pre>
+<pre class='sk'>  54  </pre>
+<pre class='ok'>  55  def free_slots(busy, day, tz, now, minutes=consts.MIN_MIN):</pre>
+<pre class='sk'>  56      # busy - список (start, end) занятых интервалов</pre>
+<pre class='sk'>  57      # возвращает список свободных (start, end) не короче minutes минут</pre>
+<pre class='ok'>  58      x, y = day_window(day, tz)</pre>
+<pre class='ok'>  59      if now.astimezone(tz) &gt; x:</pre>
+<pre class='ok'>  60          x = now.astimezone(tz)</pre>
+<pre class='ok'>  61      need = timedelta(minutes=minutes)</pre>
+<pre class='ok'>  62      res = []</pre>
+<pre class='ok'>  63      cur = x</pre>
+<pre class='ok'>  64      for s, e in sorted(busy):</pre>
+<pre class='ok'>  65          s = s.astimezone(tz)</pre>
+<pre class='ok'>  66          e = e.astimezone(tz)</pre>
+<pre class='ok'>  67          if e &lt;= cur:</pre>
+<pre class='ok'>  68              continue</pre>
+<pre class='ok'>  69          if s &gt;= y:</pre>
+<pre class='ok'>  70              break</pre>
+<pre class='ok'>  71          if s &gt; cur and s - cur &gt;= need:</pre>
+<pre class='ok'>  72              res.append((cur, s))</pre>
+<pre class='ok'>  73          if e &gt; cur:</pre>
+<pre class='ok'>  74              cur = e</pre>
+<pre class='ok'>  75      if cur &lt; y and y - cur &gt;= need:</pre>
+<pre class='ok'>  76          res.append((cur, y))</pre>
+<pre class='ok'>  77      return res</pre>
+<pre class='sk'>  78  </pre>
